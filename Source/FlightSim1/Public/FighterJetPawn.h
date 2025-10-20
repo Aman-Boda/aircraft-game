@@ -73,6 +73,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Physics")
 	float DragCoefficient;
 
+	// --- ADVANCED PHYSICS ---
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Advanced Physics")
+	float InducedDragCoefficient;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Advanced Physics")
+	float CriticalAngleOfAttack;
+
 	// --- HUD Variables ---
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "HUD")
 	float Airspeed;

@@ -26,9 +26,10 @@ AFighterJetPawn::AFighterJetPawn()
 	AircraftMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("AircraftMesh"));
 	RootComponent = AircraftMesh;
 	AircraftMesh->SetSimulatePhysics(true);
+	AircraftMesh->SetEnableGravity(true);
 	AircraftMesh->SetMassOverrideInKg(NAME_None, 15000.0f, true);
-	AircraftMesh->SetAngularDamping(0.5f);
-	AircraftMesh->SetLinearDamping(0.1f);
+	AircraftMesh->SetAngularDamping(2.0f);
+	AircraftMesh->SetLinearDamping(0.5f);
 
 	SpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("SpringArm"));
 	SpringArm->SetupAttachment(RootComponent);
@@ -56,8 +57,13 @@ AFighterJetPawn::AFighterJetPawn()
 	RollSpeed = 50.0f;
 	YawSpeed = 10.0f;
 	GroundSteerSpeed = 80.0f;
-	LiftCoefficient = 0.1f;
-	DragCoefficient = 0.005f;
+
+	// --- ADVANCED PHYSICS DEFAULTS ---
+	LiftCoefficient = 0.25f;
+	DragCoefficient = 0.02f;
+	InducedDragCoefficient = 0.05f;
+	CriticalAngleOfAttack = 15.0f;
+
 
 	// --- Weapon Properties ---
 	WeaponRange = 50000.0f;
@@ -284,44 +290,57 @@ void AFighterJetPawn::CheckIfOnGround()
 	bIsOnGround = GetWorld()->LineTraceSingleByChannel(HitResult, Start, End, ECC_Visibility, CollisionParams);
 }
 
+// --- NEW ADVANCED AERODYNAMICS FUNCTION ---
 void AFighterJetPawn::ApplyAerodynamics(float DeltaTime)
 {
-	if (!AircraftMesh) return;
+	if (!AircraftMesh || bIsOnGround) return;
 
 	FVector Velocity = AircraftMesh->GetPhysicsLinearVelocity();
-	float AirspeedSq = Velocity.SizeSquared();
+	// --- CHANGE: Renamed local variable to avoid hiding the class member ---
+	float LocalAirspeed = Velocity.Size();
+	if (LocalAirspeed < 1.0f) return; // Avoid division by zero and weird physics at rest
 
-	// Thrust
-	FVector ThrustForce = AircraftMesh->GetForwardVector() * CurrentThrottle * MaxThrust;
-	AircraftMesh->AddForce(ThrustForce);
-
-	// Drag
-	FVector DragForce = -Velocity.GetSafeNormal() * AirspeedSq * DragCoefficient;
-	AircraftMesh->AddForce(DragForce);
-
-	// Lift
-	if (!bIsOnGround)
-	{
-		FVector LiftDirection = FVector::CrossProduct(Velocity.GetSafeNormal(), AircraftMesh->GetRightVector()).GetSafeNormal();
-		FVector LiftForce = LiftDirection * AirspeedSq * LiftCoefficient;
-		AircraftMesh->AddForce(LiftForce);
-	}
-
-	// Control Torques
-	FVector RightVector = AircraftMesh->GetRightVector();
+	FVector VelocityNormal = Velocity.GetSafeNormal();
 	FVector UpVector = AircraftMesh->GetUpVector();
 	FVector ForwardVector = AircraftMesh->GetForwardVector();
 
-	AircraftMesh->AddTorqueInDegrees(RightVector * PitchInput * PitchSpeed, NAME_None, true);
-	AircraftMesh->AddTorqueInDegrees(ForwardVector * RollInput * RollSpeed, NAME_None, true);
+	// 1. Calculate Angle of Attack (AoA)
+	// The dot product of the velocity vector and the aircraft's up vector gives us the sine of the angle of attack.
+	float AoASin = FVector::DotProduct(VelocityNormal, UpVector);
+	float AngleOfAttack = FMath::Asin(AoASin);
 
-	if (bIsOnGround)
+	// 2. Calculate Dynamic Lift Coefficient based on AoA
+	float CurrentLiftCoefficient = 0;
+	// Simple stall model: lift increases up to the critical angle, then drops off.
+	if (FMath::Abs(FMath::RadiansToDegrees(AngleOfAttack)) < CriticalAngleOfAttack)
 	{
-		AircraftMesh->AddTorqueInDegrees(UpVector * GroundSteerInput * GroundSteerSpeed, NAME_None, true);
+		// Use a sine curve for a smooth lift increase
+		CurrentLiftCoefficient = LiftCoefficient * FMath::Sin(AngleOfAttack * (PI / (2.0f * FMath::DegreesToRadians(CriticalAngleOfAttack))));
 	}
-	else
-	{
-		AircraftMesh->AddTorqueInDegrees(UpVector * YawInput * YawSpeed, NAME_None, true);
-	}
+
+	// 3. Calculate Lift Force
+	// Lift is perpendicular to the velocity vector.
+	FVector LiftDirection = FVector::CrossProduct(VelocityNormal, AircraftMesh->GetRightVector()).GetSafeNormal();
+	FVector LiftForce = LiftDirection * LocalAirspeed * LocalAirspeed * CurrentLiftCoefficient;
+	AircraftMesh->AddForce(LiftForce);
+
+	// 4. Calculate Drag (Parasitic and Induced)
+	// Parasitic drag is from the shape of the aircraft.
+	FVector ParasiticDragForce = -VelocityNormal * LocalAirspeed * LocalAirspeed * DragCoefficient;
+	// Induced drag is a byproduct of generating lift. It's proportional to the square of the lift coefficient.
+	FVector InducedDragForce = -VelocityNormal * LocalAirspeed * LocalAirspeed * (CurrentLiftCoefficient * CurrentLiftCoefficient * InducedDragCoefficient);
+	AircraftMesh->AddForce(ParasiticDragForce + InducedDragForce);
+
+	// 5. Calculate Thrust
+	FVector ThrustForce = ForwardVector * CurrentThrottle * MaxThrust;
+	AircraftMesh->AddForce(ThrustForce);
+
+	// 6. Calculate Control Torques (Effectiveness based on Airspeed)
+	float ControlEffectiveness = FMath::GetMappedRangeValueClamped(FVector2D(0.f, 5000.f), FVector2D(0.1f, 1.f), LocalAirspeed);
+	FVector RightVector = AircraftMesh->GetRightVector();
+
+	AircraftMesh->AddTorqueInDegrees(RightVector * PitchInput * PitchSpeed * ControlEffectiveness, NAME_None, true);
+	AircraftMesh->AddTorqueInDegrees(ForwardVector * RollInput * RollSpeed * ControlEffectiveness, NAME_None, true);
+	AircraftMesh->AddTorqueInDegrees(UpVector * YawInput * YawSpeed * ControlEffectiveness, NAME_None, true);
 }
 
