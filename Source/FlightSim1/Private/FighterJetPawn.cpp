@@ -51,19 +51,29 @@ AFighterJetPawn::AFighterJetPawn()
 	HealthComponent = CreateDefaultSubobject<UHealthComponent>(TEXT("HealthComponent"));
 
 	// --- Default Physics Values ---
-	MaxThrust = 100000000.0f;
+	// --- CHANGE: Increased MaxThrust by 35% ---
+	MaxThrust = 17550000.0f;
 	ThrustAcceleration = 0.5f;
 	PitchSpeed = 30.0f;
-	RollSpeed = 50.0f;
+	// --- CHANGE: Significantly increased RollSpeed for responsive rolling ---
+	RollSpeed = 80.0f;
 	YawSpeed = 10.0f;
 	GroundSteerSpeed = 80.0f;
 
-	// --- ADVANCED PHYSICS DEFAULTS ---
-	LiftCoefficient = 0.25f;
-	DragCoefficient = 0.02f;
-	InducedDragCoefficient = 0.05f;
+	// --- ADVANCED PHYSICS DEFAULTS (Re-tuned for better feel) ---
+	LiftCoefficient = 0.2f;
+	DragCoefficient = 0.022f;
+	InducedDragCoefficient = 0.06f;
 	CriticalAngleOfAttack = 15.0f;
 
+	// Coordinated turn default value
+	RollYawFactor = 15.0f;
+
+	// --- Flaps and Ground Effect Defaults ---
+	FlapsLiftMultiplier = 1.75f;
+	FlapsDragMultiplier = 2.0f;
+	GroundEffectAltitude = 1500.0f; // 15 meters
+	GroundEffectLiftMultiplier = 1.5f;
 
 	// --- Weapon Properties ---
 	WeaponRange = 50000.0f;
@@ -79,6 +89,9 @@ AFighterJetPawn::AFighterJetPawn()
 	GroundSteerInput = 0.0f;
 	bIsOnGround = false;
 	bIsFiring = false;
+	bIsIncreasingThrottle = false;
+	bIsDecreasingThrottle = false;
+	bFlapsDeployed = false;
 	LockedTarget = nullptr;
 
 	// --- Find HUD Widget ---
@@ -122,6 +135,7 @@ void AFighterJetPawn::Tick(float DeltaTime)
 	if (HealthComponent && HealthComponent->IsDead()) return;
 
 	CheckIfOnGround();
+	UpdateThrottle(DeltaTime);
 	ApplyAerodynamics(DeltaTime);
 	UpdateHUDVariables();
 	UpdateLockedTarget();
@@ -132,7 +146,14 @@ void AFighterJetPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComp
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
 
-	PlayerInputComponent->BindAxis("Throttle", this, &AFighterJetPawn::Throttle);
+	PlayerInputComponent->BindAction("Throttle", IE_Pressed, this, &AFighterJetPawn::PressThrottle);
+	PlayerInputComponent->BindAction("Throttle", IE_Released, this, &AFighterJetPawn::ReleaseThrottle);
+
+	PlayerInputComponent->BindAction("ThrottleDecrease", IE_Pressed, this, &AFighterJetPawn::PressThrottleDecrease);
+	PlayerInputComponent->BindAction("ThrottleDecrease", IE_Released, this, &AFighterJetPawn::ReleaseThrottleDecrease);
+
+	PlayerInputComponent->BindAction("ToggleFlaps", IE_Pressed, this, &AFighterJetPawn::ToggleFlaps);
+
 	PlayerInputComponent->BindAxis("Pitch", this, &AFighterJetPawn::Pitch);
 	PlayerInputComponent->BindAxis("Roll", this, &AFighterJetPawn::Roll);
 	PlayerInputComponent->BindAxis("Yaw", this, &AFighterJetPawn::Yaw);
@@ -148,9 +169,8 @@ void AFighterJetPawn::OnPawnHit(UPrimitiveComponent* HitComp, AActor* OtherActor
 {
 	if (HealthComponent)
 	{
-		// Apply damage on hard landings/crashes
 		float ImpactSpeed = NormalImpulse.Size() / (AircraftMesh->GetMass());
-		if (ImpactSpeed > 1000.0f) // Threshold for damage
+		if (ImpactSpeed > 1000.0f)
 		{
 			HealthComponent->TakeDamage(50.0f);
 		}
@@ -159,7 +179,6 @@ void AFighterJetPawn::OnPawnHit(UPrimitiveComponent* HitComp, AActor* OtherActor
 
 void AFighterJetPawn::HandlePawnDeath()
 {
-	// Hide and disable the pawn
 	SetActorHiddenInGame(true);
 	SetActorEnableCollision(false);
 	SetActorTickEnabled(false);
@@ -175,10 +194,8 @@ void AFighterJetPawn::UpdateLockedTarget()
 {
 	LockedTarget = nullptr;
 	float BestTargetScore = -1.0f;
-
 	TArray<AActor*> FoundActors;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAIAircraftPawn::StaticClass(), FoundActors);
-
 	FVector MyLocation = GetActorLocation();
 	FVector MyForward = GetActorForwardVector();
 
@@ -189,8 +206,7 @@ void AFighterJetPawn::UpdateLockedTarget()
 			FVector DirectionToTarget = (PotentialTarget->GetActorLocation() - MyLocation).GetSafeNormal();
 			float DotProduct = FVector::DotProduct(MyForward, DirectionToTarget);
 
-			// Check if target is in front of us
-			if (DotProduct > 0.8f) // Within a cone in front of the player
+			if (DotProduct > 0.8f)
 			{
 				if (DotProduct > BestTargetScore)
 				{
@@ -202,9 +218,31 @@ void AFighterJetPawn::UpdateLockedTarget()
 	}
 }
 
-void AFighterJetPawn::Throttle(float Value)
+void AFighterJetPawn::UpdateThrottle(float DeltaTime)
 {
-	CurrentThrottle = FMath::Clamp(CurrentThrottle + Value * ThrustAcceleration * GetWorld()->GetDeltaSeconds(), 0.0f, 1.0f);
+	if (bIsIncreasingThrottle)
+	{
+		CurrentThrottle = FMath::Clamp(CurrentThrottle + ThrustAcceleration * DeltaTime, 0.0f, 1.0f);
+	}
+	else if (bIsDecreasingThrottle)
+	{
+		CurrentThrottle = FMath::Clamp(CurrentThrottle - ThrustAcceleration * DeltaTime, 0.0f, 1.0f);
+	}
+}
+
+void AFighterJetPawn::PressThrottle() { bIsIncreasingThrottle = true; }
+void AFighterJetPawn::ReleaseThrottle() { bIsIncreasingThrottle = false; }
+void AFighterJetPawn::PressThrottleDecrease() { bIsDecreasingThrottle = true; }
+void AFighterJetPawn::ReleaseThrottleDecrease() { bIsDecreasingThrottle = false; }
+
+void AFighterJetPawn::ToggleFlaps()
+{
+	bFlapsDeployed = !bFlapsDeployed;
+
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Yellow, bFlapsDeployed ? TEXT("Flaps Deployed") : TEXT("Flaps Retracted"));
+	}
 }
 
 void AFighterJetPawn::Pitch(float Value) { PitchInput = Value; }
@@ -229,7 +267,6 @@ void AFighterJetPawn::FireWeapon()
 	FHitResult HitResult;
 	FVector Start = MuzzleLocation->GetComponentLocation();
 	FVector End = Start + (GetActorForwardVector() * WeaponRange);
-
 	GetWorld()->LineTraceSingleByChannel(HitResult, Start, End, ECC_Visibility);
 
 	if (HitResult.GetActor())
@@ -282,65 +319,81 @@ void AFighterJetPawn::CheckIfOnGround()
 {
 	if (!AircraftMesh) return;
 	FVector Start = AircraftMesh->GetComponentLocation();
-	FVector End = Start - FVector(0.0f, 0.0f, 300.0f);
+	FVector End = Start - (GetActorUpVector() * 300.0f);
 	FHitResult HitResult;
 	FCollisionQueryParams CollisionParams;
 	CollisionParams.AddIgnoredActor(this);
-
 	bIsOnGround = GetWorld()->LineTraceSingleByChannel(HitResult, Start, End, ECC_Visibility, CollisionParams);
 }
 
-// --- NEW ADVANCED AERODYNAMICS FUNCTION ---
 void AFighterJetPawn::ApplyAerodynamics(float DeltaTime)
 {
-	if (!AircraftMesh || bIsOnGround) return;
+	if (!AircraftMesh) return;
 
-	FVector Velocity = AircraftMesh->GetPhysicsLinearVelocity();
-	// --- CHANGE: Renamed local variable to avoid hiding the class member ---
-	float LocalAirspeed = Velocity.Size();
-	if (LocalAirspeed < 1.0f) return; // Avoid division by zero and weird physics at rest
-
-	FVector VelocityNormal = Velocity.GetSafeNormal();
-	FVector UpVector = AircraftMesh->GetUpVector();
 	FVector ForwardVector = AircraftMesh->GetForwardVector();
+	FVector UpVector = AircraftMesh->GetUpVector();
+	FVector RightVector = AircraftMesh->GetRightVector();
 
-	// 1. Calculate Angle of Attack (AoA)
-	// The dot product of the velocity vector and the aircraft's up vector gives us the sine of the angle of attack.
-	float AoASin = FVector::DotProduct(VelocityNormal, UpVector);
-	float AngleOfAttack = FMath::Asin(AoASin);
-
-	// 2. Calculate Dynamic Lift Coefficient based on AoA
-	float CurrentLiftCoefficient = 0;
-	// Simple stall model: lift increases up to the critical angle, then drops off.
-	if (FMath::Abs(FMath::RadiansToDegrees(AngleOfAttack)) < CriticalAngleOfAttack)
-	{
-		// Use a sine curve for a smooth lift increase
-		CurrentLiftCoefficient = LiftCoefficient * FMath::Sin(AngleOfAttack * (PI / (2.0f * FMath::DegreesToRadians(CriticalAngleOfAttack))));
-	}
-
-	// 3. Calculate Lift Force
-	// Lift is perpendicular to the velocity vector.
-	FVector LiftDirection = FVector::CrossProduct(VelocityNormal, AircraftMesh->GetRightVector()).GetSafeNormal();
-	FVector LiftForce = LiftDirection * LocalAirspeed * LocalAirspeed * CurrentLiftCoefficient;
-	AircraftMesh->AddForce(LiftForce);
-
-	// 4. Calculate Drag (Parasitic and Induced)
-	// Parasitic drag is from the shape of the aircraft.
-	FVector ParasiticDragForce = -VelocityNormal * LocalAirspeed * LocalAirspeed * DragCoefficient;
-	// Induced drag is a byproduct of generating lift. It's proportional to the square of the lift coefficient.
-	FVector InducedDragForce = -VelocityNormal * LocalAirspeed * LocalAirspeed * (CurrentLiftCoefficient * CurrentLiftCoefficient * InducedDragCoefficient);
-	AircraftMesh->AddForce(ParasiticDragForce + InducedDragForce);
-
-	// 5. Calculate Thrust
 	FVector ThrustForce = ForwardVector * CurrentThrottle * MaxThrust;
 	AircraftMesh->AddForce(ThrustForce);
 
-	// 6. Calculate Control Torques (Effectiveness based on Airspeed)
-	float ControlEffectiveness = FMath::GetMappedRangeValueClamped(FVector2D(0.f, 5000.f), FVector2D(0.1f, 1.f), LocalAirspeed);
-	FVector RightVector = AircraftMesh->GetRightVector();
+	if (bIsOnGround)
+	{
+		AircraftMesh->AddTorqueInDegrees(UpVector * GroundSteerInput * GroundSteerSpeed, NAME_None, true);
+	}
+	else
+	{
+		FVector Velocity = AircraftMesh->GetPhysicsLinearVelocity();
+		float LocalAirspeed = Velocity.Size();
+		if (LocalAirspeed < 1.0f) return;
 
-	AircraftMesh->AddTorqueInDegrees(RightVector * PitchInput * PitchSpeed * ControlEffectiveness, NAME_None, true);
-	AircraftMesh->AddTorqueInDegrees(ForwardVector * RollInput * RollSpeed * ControlEffectiveness, NAME_None, true);
-	AircraftMesh->AddTorqueInDegrees(UpVector * YawInput * YawSpeed * ControlEffectiveness, NAME_None, true);
+		FVector VelocityNormal = Velocity.GetSafeNormal();
+
+		float AngleOfAttackDegrees = FMath::RadiansToDegrees(FMath::Acos(FVector::DotProduct(VelocityNormal, ForwardVector)));
+
+		float CurrentLiftCoefficient = 0;
+		if (AngleOfAttackDegrees < CriticalAngleOfAttack)
+		{
+			CurrentLiftCoefficient = (AngleOfAttackDegrees / CriticalAngleOfAttack) * LiftCoefficient;
+		}
+		else
+		{
+			CurrentLiftCoefficient = 0.01f;
+		}
+
+		float FinalLiftCoefficient = CurrentLiftCoefficient;
+		float FinalDragCoefficient = DragCoefficient;
+
+		if (bFlapsDeployed)
+		{
+			FinalLiftCoefficient *= FlapsLiftMultiplier;
+			FinalDragCoefficient *= FlapsDragMultiplier;
+		}
+		if (Altitude < GroundEffectAltitude)
+		{
+			FinalLiftCoefficient *= GroundEffectLiftMultiplier;
+		}
+
+		FVector LiftDirection = FVector::CrossProduct(VelocityNormal, RightVector).GetSafeNormal();
+		FVector LiftForce = LiftDirection * LocalAirspeed * LocalAirspeed * FinalLiftCoefficient;
+		AircraftMesh->AddForce(LiftForce);
+
+		FVector ParasiticDragForce = -VelocityNormal * LocalAirspeed * LocalAirspeed * FinalDragCoefficient;
+		FVector InducedDragForce = -VelocityNormal * LocalAirspeed * LocalAirspeed * (CurrentLiftCoefficient * CurrentLiftCoefficient * InducedDragCoefficient);
+		AircraftMesh->AddForce(ParasiticDragForce + InducedDragForce);
+
+		float ControlEffectiveness = FMath::GetMappedRangeValueClamped(FVector2D(0.f, 15000.f), FVector2D(0.1f, 1.f), LocalAirspeed);
+
+		AircraftMesh->AddTorqueInDegrees(RightVector * PitchInput * PitchSpeed * ControlEffectiveness, NAME_None, true);
+
+		// Apply the standard roll torque
+		AircraftMesh->AddTorqueInDegrees(ForwardVector * RollInput * RollSpeed * ControlEffectiveness, NAME_None, true);
+		// Apply a small amount of yaw in the same direction as the roll to make the turn feel natural
+		float CoordinatedYaw = RollInput * RollYawFactor * YawSpeed * ControlEffectiveness;
+		AircraftMesh->AddTorqueInDegrees(UpVector * CoordinatedYaw, NAME_None, true);
+
+		// Apply the standard yaw torque from player input
+		AircraftMesh->AddTorqueInDegrees(UpVector * YawInput * YawSpeed * ControlEffectiveness, NAME_None, true);
+	}
 }
 

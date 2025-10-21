@@ -4,18 +4,17 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
+#include "Components/StaticMeshComponent.h"
+#include "GameFramework/SpringArmComponent.h"
+#include "Camera/CameraComponent.h"
+#include "Components/SceneComponent.h"
+#include "Blueprint/UserWidget.h"
+#include "Particles/ParticleSystem.h"
+#include "HealthComponent.h"
+#include "Missile.h"
 #include "FighterJetPawn.generated.h"
 
-// Forward declarations for component classes
-class UStaticMeshComponent;
-class USpringArmComponent;
-class UCameraComponent;
-class USceneComponent;
-class UHealthComponent;
-class UParticleSystem;
 class USoundBase;
-class UUserWidget;
-class AMissile;
 
 UCLASS()
 class FLIGHTSIM1_API AFighterJetPawn : public APawn
@@ -67,18 +66,35 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Maneuvering")
 	float GroundSteerSpeed;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Physics")
+	// --- Advanced Aerodynamics ---
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Aerodynamics")
 	float LiftCoefficient;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Physics")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Aerodynamics")
 	float DragCoefficient;
 
-	// --- ADVANCED PHYSICS ---
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Advanced Physics")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Aerodynamics")
 	float InducedDragCoefficient;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Advanced Physics")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Aerodynamics")
 	float CriticalAngleOfAttack;
+
+	// --- Factor to control how much roll induces a turn ---
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Maneuvering")
+	float RollYawFactor;
+
+	// --- Flaps and Ground Effect Parameters ---
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Aerodynamics|Flaps")
+	float FlapsLiftMultiplier;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Aerodynamics|Flaps")
+	float FlapsDragMultiplier;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Aerodynamics|GroundEffect")
+	float GroundEffectAltitude;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight|Aerodynamics|GroundEffect")
+	float GroundEffectLiftMultiplier;
 
 	// --- HUD Variables ---
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "HUD")
@@ -97,6 +113,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapons")
 	float FireRate;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapons")
+	int32 MaxMissileAmmo;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapons")
+	int32 CurrentMissileAmmo;
+
 	UPROPERTY(EditDefaultsOnly, Category = "Weapons")
 	UParticleSystem* MuzzleFlashFX;
 
@@ -106,50 +128,52 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Weapons")
 	TSubclassOf<AMissile> MissileClass;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapons")
-	int32 MaxMissileAmmo;
+private:
+	// --- Flight Control Inputs ---
+	float PitchInput;
+	float RollInput;
+	float YawInput;
+	float GroundSteerInput;
+	float CurrentThrottle;
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Weapons")
-	int32 CurrentMissileAmmo;
+	// --- Internal State ---
+	bool bIsOnGround;
+	bool bIsFiring;
+	bool bIsIncreasingThrottle;
+	bool bIsDecreasingThrottle;
+	bool bFlapsDeployed;
 
-protected:
-	// --- Input Handling ---
-	void Throttle(float Value);
+	FTimerHandle FireRateTimerHandle;
+
+	// --- HUD ---
+	UPROPERTY()
+	TSubclassOf<UUserWidget> HUDWidgetClass;
+	UPROPERTY()
+	UUserWidget* HUDWidgetInstance;
+
+	// --- Input Functions ---
+	void PressThrottle();
+	void ReleaseThrottle();
+	void PressThrottleDecrease();
+	void ReleaseThrottleDecrease();
 	void Pitch(float Value);
 	void Roll(float Value);
 	void Yaw(float Value);
 	void GroundSteer(float Value);
-
 	void StartFire();
 	void StopFire();
 	void FireWeapon();
-
 	void FireMissile();
+	void ToggleFlaps();
 
-	// --- Internal Logic ---
-	void ApplyAerodynamics(float DeltaTime);
-	void CheckIfOnGround();
-	void UpdateHUDVariables();
-	void UpdateLockedTarget();
-
-	UFUNCTION()
+	// --- Logic Functions ---
 	void OnPawnHit(UPrimitiveComponent* HitComp, AActor* OtherActor, UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit);
-
 	UFUNCTION()
 	void HandlePawnDeath();
-
-	bool bIsFiring;
-	bool bIsOnGround;
-	float CurrentThrottle;
-	float PitchInput, RollInput, YawInput, GroundSteerInput;
-
-	FTimerHandle FireRateTimerHandle;
-
-	// --- UI ---
-	UPROPERTY(EditDefaultsOnly, Category = "UI")
-	TSubclassOf<UUserWidget> HUDWidgetClass;
-
-	UPROPERTY()
-	UUserWidget* HUDWidgetInstance;
+	void UpdateHUDVariables();
+	void UpdateLockedTarget();
+	void UpdateThrottle(float DeltaTime);
+	void CheckIfOnGround();
+	void ApplyAerodynamics(float DeltaTime);
 };
 
